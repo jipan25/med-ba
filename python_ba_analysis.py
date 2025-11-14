@@ -14,9 +14,22 @@ from statsmodels.stats.multitest import multipletests
 import warnings
 warnings.filterwarnings('ignore')
 
-# 设置中文字体
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS']
-plt.rcParams['axes.unicode_minus'] = False
+# 设置字体 - 服务器兼容版本
+import matplotlib
+matplotlib.use('Agg')  # 使用非交互式后端
+
+# 尝试多种字体，优先使用服务器可用的字体
+try:
+    plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Liberation Sans', 'Arial', 'Helvetica']
+    plt.rcParams['axes.unicode_minus'] = False
+    # 测试字体是否可用
+    plt.figure()
+    plt.title('Font Test')
+    plt.close()
+except:
+    # 如果字体仍然有问题，使用默认设置
+    plt.rcParams.update(plt.rcParamsDefault)
+    print("警告: 使用默认字体设置")
 
 def load_metadata(file_path):
     """加载样本元数据"""
