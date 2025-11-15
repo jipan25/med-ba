@@ -17,7 +17,7 @@ echo "=== 自动化质控优化管道启动 ==="
 QUALITY_THRESHOLD=20
 MIN_LENGTH=50
 DATA_DIR="../mnt-med/CRA007360"
-OUTPUT_DIR="optimized_qc_results_$(date +%Y%m%d_%H%M%S)"
+OUTPUT_DIR="../mnt-med-qc/optimized_qc_results_$(date +%Y%m%d_%H%M%S)"
 
 echo "配置参数:"
 echo "- 质量阈值: $QUALITY_THRESHOLD"
