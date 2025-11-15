@@ -110,6 +110,7 @@ for sample_id in $SAMPLES; do
         --quality "$QUALITY_THRESHOLD" \
         --length "$MIN_LENGTH" \
         --paired \
+        --cores 3 \
         --output_dir "$sample_out_dir" \
         "$r1_file" \
         "$r2_file"; then
