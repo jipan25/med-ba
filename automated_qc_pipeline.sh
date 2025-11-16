@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 自动化质控优化管道
-# 执行完整的质控优化流程
+# 执行完整的质控优化流程，支持断点续执行
 
 set -e  # 遇到错误立即退出
 
@@ -17,7 +17,7 @@ echo "=== 自动化质控优化管道启动 ==="
 QUALITY_THRESHOLD=20
 MIN_LENGTH=50
 DATA_DIR="../mnt-med/CRA007360"
-OUTPUT_DIR="../mnt-med-qc/optimized_qc_results_$(date +%Y%m%d_%H%M%S)"
+OUTPUT_DIR="../mnt-med-data/optimized_qc_results_20251115_195620"  # 使用固定目录名以便续执行
 
 echo "配置参数:"
 echo "- 质量阈值: $QUALITY_THRESHOLD"
@@ -61,7 +61,6 @@ check_tool multiqc || {
 echo ""
 echo "=== 发现FASTQ文件 ==="
 
-# 使用更兼容的数组声明
 SAMPLES=""
 SAMPLE_COUNT=0
 
@@ -90,12 +89,37 @@ fi
 
 echo "总共发现 $SAMPLE_COUNT 个样本"
 
-# 质量修剪
+# 检查文件完整性的函数
+check_file_complete() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        return 1
+    fi
+    
+    # 检查文件大小是否合理（至少1KB）
+    local size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null)
+    if [ "$size" -lt 1024 ]; then
+        return 1
+    fi
+    
+    # 检查gzip文件完整性
+    if [[ "$file" == *.gz ]]; then
+        if gzip -t "$file" 2>/dev/null; then
+            return 0
+        else
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
+# 质量修剪（支持断点续执行）
 echo ""
 echo "=== 执行质量修剪 ==="
 
 for sample_id in $SAMPLES; do
-    echo "处理样本: $sample_id"
+    echo "检查样本: $sample_id"
     
     r1_file="$DATA_DIR/$sample_id/${sample_id}_f1.fq.gz"
     r2_file="$DATA_DIR/$sample_id/${sample_id}_r2.fq.gz"
@@ -103,14 +127,34 @@ for sample_id in $SAMPLES; do
     sample_out_dir="$OUTPUT_DIR/$sample_id"
     mkdir -p "$sample_out_dir"
     
+    trimmed_r1="$sample_out_dir/${sample_id}_f1_val_1.fq.gz"
+    trimmed_r2="$sample_out_dir/${sample_id}_r2_val_2.fq.gz"
+    
+    # 检查是否已经完成修剪
+    if check_file_complete "$trimmed_r1" && check_file_complete "$trimmed_r2"; then
+        echo "✓ $sample_id 已经完成修剪，跳过"
+        continue
+    fi
+    
+    # 如果val文件存在但不完整，删除重新处理
+    if [ -f "$trimmed_r1" ] && ! check_file_complete "$trimmed_r1"; then
+        echo "⚠ $sample_id R1 val文件不完整，重新处理"
+        rm -f "$trimmed_r1"
+    fi
+    
+    if [ -f "$trimmed_r2" ] && ! check_file_complete "$trimmed_r2"; then
+        echo "⚠ $sample_id R2 val文件不完整，重新处理"
+        rm -f "$trimmed_r2"
+    fi
+    
     # 执行trim_galore
-    echo "执行质量修剪: trim_galore --quality $QUALITY_THRESHOLD --length $MIN_LENGTH --paired $r1_file $r2_file"
+    echo "执行质量修剪: $sample_id"
     
     if trim_galore \
         --quality "$QUALITY_THRESHOLD" \
         --length "$MIN_LENGTH" \
         --paired \
-        --cores 3 \
+        --cores 4 \
         --output_dir "$sample_out_dir" \
         "$r1_file" \
         "$r2_file"; then
@@ -131,7 +175,7 @@ for sample_id in $SAMPLES; do
     trimmed_r1="$sample_out_dir/${sample_id}_f1_val_1.fq.gz"
     trimmed_r2="$sample_out_dir/${sample_id}_r2_val_2.fq.gz"
     
-    if [ -f "$trimmed_r1" ] && [ -f "$trimmed_r2" ]; then
+    if check_file_complete "$trimmed_r1" && check_file_complete "$trimmed_r2"; then
         if [ -z "$TRIMMED_SAMPLES" ]; then
             TRIMMED_SAMPLES="$sample_id"
         else
@@ -140,7 +184,7 @@ for sample_id in $SAMPLES; do
         TRIMMED_COUNT=$((TRIMMED_COUNT + 1))
         echo "✓ $sample_id 修剪成功"
     else
-        echo "❌ $sample_id 修剪失败，输出文件不存在"
+        echo "❌ $sample_id 修剪失败或文件不完整"
     fi
 done
 
@@ -149,7 +193,7 @@ if [ $TRIMMED_COUNT -eq 0 ]; then
     exit 1
 fi
 
-# 质控验证
+# 质控验证（支持断点续执行）
 echo ""
 echo "=== 运行质控验证 ==="
 
@@ -161,37 +205,54 @@ for sample_id in $TRIMMED_SAMPLES; do
     trimmed_r1="$sample_out_dir/${sample_id}_f1_val_1.fq.gz"
     trimmed_r2="$sample_out_dir/${sample_id}_r2_val_2.fq.gz"
     
+    # 检查是否已经生成了FastQC报告
+    r1_report="$QC_DIR/$(basename "$trimmed_r1" .fq.gz)_fastqc.html"
+    r2_report="$QC_DIR/$(basename "$trimmed_r2" .fq.gz)_fastqc.html"
+    
+    if [ -f "$r1_report" ] && [ -f "$r2_report" ]; then
+        echo "✓ $sample_id 质控报告已存在，跳过"
+        continue
+    fi
+    
     echo "质控验证: $sample_id"
     
-    if fastqc "$trimmed_r1" "$trimmed_r2" -o "$QC_DIR"; then
+    if fastqc "$trimmed_r1" "$trimmed_r2" -o "$QC_DIR" -t 4; then
         echo "✓ $sample_id 质控完成"
     else
         echo "❌ $sample_id 质控失败"
     fi
 done
 
-# 生成MultiQC报告
+# 生成MultiQC报告（支持断点续执行）
 echo ""
 echo "=== 生成MultiQC汇总报告 ==="
 
-if multiqc "$QC_DIR" -o "$OUTPUT_DIR"; then
-    echo "✓ MultiQC报告生成完成"
+MULTIQC_REPORT="$OUTPUT_DIR/multiqc_report.html"
+
+if [ -f "$MULTIQC_REPORT" ]; then
+    echo "✓ MultiQC报告已存在，跳过生成"
 else
-    echo "❌ MultiQC报告生成失败"
+    if multiqc "$QC_DIR" -o "$OUTPUT_DIR"; then
+        echo "✓ MultiQC报告生成完成"
+    else
+        echo "❌ MultiQC报告生成失败"
+    fi
 fi
 
 # 生成执行报告
 echo ""
 echo "=== 生成执行报告 ==="
 
-cat > "$OUTPUT_DIR/pipeline_execution_report.md" << EOF
+REPORT_FILE="$OUTPUT_DIR/pipeline_execution_report.md"
+
+cat > "$REPORT_FILE" << EOF
 # 自动化质控优化管道执行报告
 
 ## 执行摘要
 - 执行时间: $(date)
-- 原始样本数: ${#SAMPLES[@]}
-- 成功修剪样本数: ${#TRIMMED_SAMPLES[@]}
-- 成功率: $(( ${#TRIMMED_SAMPLES[@]} * 100 / ${#SAMPLES[@]} ))%
+- 原始样本数: $SAMPLE_COUNT
+- 成功修剪样本数: $TRIMMED_COUNT
+- 成功率: $((TRIMMED_COUNT * 100 / SAMPLE_COUNT))%
 
 ## 配置参数
 - 质量阈值: $QUALITY_THRESHOLD
@@ -205,10 +266,10 @@ cat > "$OUTPUT_DIR/pipeline_execution_report.md" << EOF
 EOF
 
 for sample_id in $TRIMMED_SAMPLES; do
-    echo "- $sample_id" >> "$OUTPUT_DIR/pipeline_execution_report.md"
+    echo "- $sample_id" >> "$REPORT_FILE"
 done
 
-cat >> "$OUTPUT_DIR/pipeline_execution_report.md" << EOF
+cat >> "$REPORT_FILE" << EOF
 
 ### 处理失败的样本
 EOF
@@ -223,11 +284,11 @@ for sample_id in $SAMPLES; do
         fi
     done
     if [ $found -eq 0 ]; then
-        echo "- $sample_id" >> "$OUTPUT_DIR/pipeline_execution_report.md"
+        echo "- $sample_id" >> "$REPORT_FILE"
     fi
 done
 
-cat >> "$OUTPUT_DIR/pipeline_execution_report.md" << EOF
+cat >> "$REPORT_FILE" << EOF
 
 ## 文件输出结构
 - 修剪后FASTQ文件: $OUTPUT_DIR/{sample_id}/
@@ -247,7 +308,7 @@ cat >> "$OUTPUT_DIR/pipeline_execution_report.md" << EOF
 - 管道设计为容错处理，单个样本失败不影响其他样本
 EOF
 
-echo "✓ 执行报告已生成: $OUTPUT_DIR/pipeline_execution_report.md"
+echo "✓ 执行报告已生成: $REPORT_FILE"
 
 # 最终验证
 echo ""
@@ -269,4 +330,4 @@ echo ""
 echo "下一步:"
 echo "1. 打开 $OUTPUT_DIR/multiqc_report.html 查看质控结果"
 echo "2. 确认质控通过后进行下游分析"
-echo "3. 如有问题，查看 $OUTPUT_DIR/pipeline_execution_report.md"
+echo "3. 如有问题，查看 $REPORT_FILE"
