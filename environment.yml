@@ -1,0 +1,39 @@
+# environment.yml
+name: sc_analysis_clean
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  # Conda R Base and Compiler Toolchain (解决所有底层编译问题)
+  - r-base=4.3 # 明确指定 R 版本，锁定生态
+  - r-essentials 
+  - r-devtools # 用于后续可能的 remotes 安装
+  - gcc_linux-64 # Conda C/C++ 编译器
+  - gxx_linux-64
+  - sysroot_linux-64
+
+  # 解决 gdtools/cairo/xz/leidenbase 编译问题的底层库
+  - libxml2
+  - libpng
+  - cairo
+  - freetype
+  - xz
+  - libtool
+  - autoconf
+  - pkg-config
+  - xorg-libx11 # X11 依赖
+  - xorg-kbproto # X11 依赖
+
+  # 核心 R 包 (通过 Conda-Forge/Bioconda 安装，避免编译冲突)
+  # Conda 会自动解决这些包所需的底层 C++ 和版本依赖
+  - r-seurat=4.4 # 推荐使用 Conda 预编译的 Seurat
+  - r-dplyr
+  - r-ggplot2=3.4 # 明确锁定一个稳定且包含 check_linewidth 的版本
+  
+  # Bioconductor 包 (使用 Bioconda 预编译版)
+  - bioconductor-clusterprofiler 
+  - bioconductor-enrichplot
+  - bioconductor-ggtree
+  - bioconductor-fgsea
+  - bioconductor-org.mm.eg.db
