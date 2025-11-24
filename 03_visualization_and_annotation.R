@@ -22,32 +22,78 @@ message("--- 正在进行 UMAP 可视化 ---")
 # ------------------------------------------------------------------------------
 # 关键修正: 合并图层以进行差异表达分析
 # ------------------------------------------------------------------------------
-message("--- 正在清理并合并 RNA Assay 中的图层 ---")
+# ------------------------------------------------------------------------------
+# 关键修正: 合并图层 (Seurat V5 智能兼容版 - 增强鲁棒性 V4)
+# ------------------------------------------------------------------------------
+message("--- 正在检查并合并 RNA Assay 中的图层 ---")
 
-# 1. 临时保存 RNA 原始 Counts
-rna_counts <- GetAssayData(seurat_integrated, assay = "RNA", layer = "counts")
-
-# 2. 临时切换默认 Assay，以便删除 RNA Assay
-if (DefaultAssay(seurat_integrated) == "RNA") {
-    # 假设 'integrated' Assay 存在
-    DefaultAssay(seurat_integrated) <- "integrated" 
+# 定义一个手动合并图层的救援函数
+manual_join_layers <- function(obj) {
+  message("⚠️ 正在使用手动模式合并图层...")
+  
+  # 1. 检查是否有多个 counts 图层
+  assay_obj <- obj[["RNA"]]
+  all_layers <- SeuratObject::Layers(assay_obj)
+  count_layers <- grep("^counts\\.", all_layers, value = TRUE)
+  
+  if (length(count_layers) > 0) {
+    # 提取并合并矩阵
+    mats <- lapply(count_layers, function(l) SeuratObject::LayerData(assay_obj, layer = l))
+    common_features <- Reduce(intersect, lapply(mats, rownames))
+    message(paste("合并后保留基因数:", length(common_features)))
+    
+    mats <- lapply(mats, function(m) m[common_features, ])
+    combined_counts <- do.call(cbind, mats)
+    
+    # 2. === 关键修正开始 ===
+    # 在删除 RNA Assay 之前，必须先切换 DefaultAssay！
+    # 我们临时切换到 'integrated' (假设它存在，通常CCA整合后都在)
+    current_default <- DefaultAssay(obj)
+    if (current_default == "RNA") {
+       if ("integrated" %in% names(obj@assays)) {
+           DefaultAssay(obj) <- "integrated"
+       } else {
+           # 极罕见情况：如果没有 integrated，随便切一个存在的 assay 甚至新建一个临时的
+           warning("未找到 integrated assay，尝试强制删除...")
+       }
+    }
+    
+    # 3. 删除旧 RNA Assay 并重建
+    obj[["RNA"]] <- NULL
+    obj[["RNA"]] <- CreateAssayObject(counts = combined_counts)
+    
+    # 4. 切回 RNA 为默认
+    DefaultAssay(obj) <- "RNA"
+    # === 关键修正结束 ===
+  }
+  return(obj)
 }
 
-# 3. 移除旧的 RNA Assay 并重新添加
-seurat_integrated[["RNA"]] <- NULL
-seurat_integrated[["RNA"]] <- CreateAssayObject(counts = rna_counts)
+# --- 执行合并逻辑 ---
 
-# 4. 将默认 Assay 切换回 RNA
-DefaultAssay(seurat_integrated) <- "RNA" 
+# 1. 尝试切换默认 Assay 到 RNA (以便后续操作)
+DefaultAssay(seurat_integrated) <- "RNA"
 
-# 5. 重新进行标准化，生成 'data' layer
-seurat_integrated <- NormalizeData(seurat_integrated, assay = "RNA")
+# 2. 尝试使用官方 JoinLayers，失败则用手动
+tryCatch({
+  # 强制检查命名空间中的导出函数
+  if (exists("JoinLayers", where = asNamespace("Seurat"), mode = "function")) {
+    message("✅ 检测到 Seurat::JoinLayers，正在执行标准合并...")
+    seurat_integrated <- Seurat::JoinLayers(object = seurat_integrated, assay = "RNA")
+  } else {
+    stop("Seurat::JoinLayers 未找到")
+  }
+}, error = function(e) {
+  message("❌ 官方 JoinLayers 调用失败或环境异常，切换到手动救援模式。")
+  # 调用增强版的手动合并函数
+  seurat_integrated <<- manual_join_layers(seurat_integrated)
+})
 
-# 6. 执行 JoinLayers：显式指定使用 Seurat 包中的 JoinLayers
-#    ----------------------------------------------------------------------
-# seurat_integrated <- JoinLayers(object = seurat_integrated, assay = "RNA") 
-#    ----------------------------------------------------------------------
+# 3. 重新进行标准化 (确保 data layer 与新的 counts 一致)
+message("--- 正在重新标准化 (NormalizeData) ---")
+seurat_integrated <- NormalizeData(seurat_integrated, assay = "RNA", verbose = FALSE)
 
+# ----------------------------------------------------------------------
 
 # ==============================================================================
 # 步骤 2: 寻找 Marker 基因
@@ -99,9 +145,10 @@ convert_id_to_symbol <- function(ensembl_ids) {
     return(converted_list)
 }
 
-# 1. 提取 Cluster 0 的 Top 5 Ensembl ID (用于绘图)
+# 1. 提取 Cluster "Neutrophils" 的 Top 5 Ensembl ID (用于绘图)
+# 注意：FindAllMarkers 运行后，聚类名称已由数字0变为字符"Neutrophils"
 top5_ens_id <- top5_markers %>% 
-    dplyr::filter(cluster == 0) %>%
+    dplyr::filter(cluster == "Neutrophils") %>%
     dplyr::pull(gene)
 
 # ==============================================================================
@@ -178,13 +225,28 @@ message("--- 脚本运行完成 ---")
 # ==============================================================================
 message("--- 正在进行细胞类型注释 ---")
 
-# 1. 定义注释字典 (配置部分)
+# 您的脚本中：
 cluster_annotation_map <- c(
     "0" = "Neutrophils",
     "1" = "Monocytes/Macrophages",
     "2" = "Epithelial/iBEC_Progenitor",
     "3" = "T_Cells",
-    "4" = "B_Cells"
+    "4" = "B_Cells",
+    
+    # --- 新增和修正的映射 ---
+    "5" = "Cycling_Cells (S/G2/M)",
+    "6" = "Cycling_Cells (G2/M)",
+    "7" = "Activated_Immune/Endo", # 待进一步验证
+    "8" = "Neutrophil_Progenitors", # 极可能是前体或亚型
+    "9" = "Myeloid_DCs/Macs", 
+    "10" = "High_Mito_Unclear", # 通常需过滤或单独处理
+    "11" = "Cytotoxic_T/NK/NKT",
+    "12" = "Erythroid_Cells", # 红细胞系
+    "13" = "Ribosomal_Active/Low_Quality", 
+    "14" = "Endothelial/Fibroblasts",
+    "15" = "Kupffer_Cells", # 肝脏驻留巨噬细胞
+    "16" = "Lymphoid_Progenitor",
+    "17" = "Pre-B_Cells"
 )
 
 # 2. **关键修正：使用 Idents() 获取当前聚类，并使用名字进行映射**
@@ -240,5 +302,55 @@ Idents(seurat_integrated) <- "cell_type"
 saveRDS(seurat_integrated, file = "seurat_integrated_clustered.rds")
 message("带注释的 Seurat 对象已保存。")
 
+# ==============================================================================
+# 步骤 5: 生成带基因名的 Marker 列表 (最终修正版 - 解决所有命名空间冲突)
+# ==============================================================================
+
+library(dplyr)
+library(AnnotationDbi)
+library(EnsDb.Mmusculus.v79) # 确保这个包已加载
+
+# 1. 读取 Top5 Marker 文件 
+if (!exists("top5_markers")) {
+  if (file.exists("03_Top5_Cluster_Markers.csv")) {
+    top5_markers <- read.csv("03_Top5_Cluster_Markers.csv")
+  } else {
+    stop("找不到 top5_markers 对象或文件。")
+  }
+}
+
+# 2. 定义转换函数
+get_symbols <- function(ids) {
+  # 去掉版本号 (例如 ENSMUSG...01.1 -> ENSMUSG...01)
+  clean_ids <- gsub("\\.\\d+$", "", ids) 
+  
+  # 批量映射
+  res <- mapIds(EnsDb.Mmusculus.v79, 
+                keys = clean_ids, 
+                column = "SYMBOL", 
+                keytype = "GENEID", 
+                multiVals = "first")
+  return(res)
+}
+
+# 3. 转换并整理表格 (修正：select 和 filter 都使用 dplyr::)
+annotated_top5 <- top5_markers %>%
+  mutate(Symbol = get_symbols(gene)) %>%
+  dplyr::select(cluster, Symbol, gene, avg_log2FC) # 解决 select 冲突
+
+# 4. 打印您未定义的 Cluster (5-17) 的前 5 个基因
+unknown_clusters <- c(5:17) 
+
+# 过滤出未知簇并打印 (修正：使用 dplyr::filter)
+result_to_show <- annotated_top5 %>% 
+  dplyr::filter(cluster %in% unknown_clusters) %>% # 👈 解决 filter 冲突
+  as.data.frame()
+
+# 打印最终结果
+print(result_to_show)
+
+# 5. 保存结果
+write.csv(annotated_top5, "03_Top5_Markers_With_Symbols.csv", row.names = FALSE)
+message("已生成带基因名的文件: 03_Top5_Markers_With_Symbols.csv")
 
 rm(list = ls())
