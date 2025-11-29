@@ -1,5 +1,6 @@
 # 文件名: 12_figure_1def_replication.R
-# 功能: 修正 Figure 1F：复现论文中显示样本来源叠加的 UMAP 图
+# 功能: 使用 05 脚本导出的 CSV 文件复现论文 Figure 1 D, E, F
+# 修正: 将 Figure 1F 修改为 UMAP 样本来源叠加图，以匹配论文原图
 # -----------------------------------------------------------------------------
 
 library(ggplot2)
@@ -14,7 +15,14 @@ library(ggpubr) # 用于组合图形
 # 1. 读取数据
 # ==============================================================================
 message("--- 正在读取 real_umap_metadata.csv ---")
-umap_data <- read.csv("real_umap_metadata.csv")
+# 这个文件由 05_neutrophil_subanalysis.R 脚本生成
+data_file_path <- "real_umap_metadata.csv"
+
+if (!file.exists(data_file_path)) {
+    stop("错误: 找不到 'real_umap_metadata.csv' 文件。请确保已成功运行 05_neutrophil_subanalysis.R。")
+}
+
+umap_data <- read.csv(data_file_path)
 
 # 确保 cluster 列是因子，并设置颜色
 umap_data$cluster <- factor(umap_data$cluster, levels = c("K2-C1", "K2-C2"))
@@ -22,89 +30,78 @@ umap_data$cluster <- factor(umap_data$cluster, levels = c("K2-C1", "K2-C2"))
 umap_data$sample_group <- as.factor(umap_data$sample_group)
 
 # 定义颜色
-cluster_colors <- c("K2-C1" = "#E41A1C", "K2-C2" = "#377EB8")
-# 定义样本颜色 (对应论文中的 Saline 和 RRV 组)
-# 假设 NC_5d 对应 Saline (红色), RRV_5d 对应 RRV (蓝色)
-sample_colors <- c("NC_5d" = "#E41A1C", "RRV_5d" = "#377EB8") 
+# 图 D: 亚群颜色
+cluster_colors <- c("K2-C1" = "#1f78b4", "K2-C2" = "#ff7f00") # 蓝色/橙色 (参考论文配色)
+# 图 F: 样本颜色 (Saline=红色, RRV=蓝色)
+sample_colors <- c("NC_5d" = "#E41A1C", "RRV_5d" = "#377EB8") # 请根据您的实际样本名调整 Key
 
-# 为了更好地重现 Figure 1F，我们只需要关注 K2-C1 和 K2-C2 亚群的细胞。
-# -----------------------------------------------------------------------------
-
+# 定义绘图主题
+theme_custom <- function() {
+  theme_minimal(base_size = 14) +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.line = element_line(colour = "black"),
+      panel.border = element_rect(colour = "black", fill=NA, linewidth=1),
+      legend.title = element_text(face = "bold"),
+      axis.text = element_blank(), # 移除轴刻度
+      axis.ticks = element_blank(),
+      axis.title = element_blank() # 移除轴标题 (如 UMAP_1)
+    )
+}
 
 # ==============================================================================
-# 2. 绘制 Figure 1D: UMAP 亚群分布图 (未更改)
+# 2. 绘制 Figure 1D: UMAP 亚群分布图
 # ==============================================================================
 
 message("--- 正在绘制 Figure 1D: UMAP 亚群分布 ---")
 p_umap_cluster <- ggplot(umap_data, aes(x = UMAP_1, y = UMAP_2, color = cluster)) +
     geom_point(size = 0.5, alpha = 0.8) +
     scale_color_manual(values = cluster_colors, name = "Subcluster") +
-    theme_minimal() +
-    theme(
-        panel.grid = element_blank(),
-        axis.title = element_blank(),
-        axis.text = element_blank(),
-        axis.ticks = element_blank(),
-        legend.position = "right",
-        plot.title = element_text(hjust = 0.5)
-    ) +
-    labs(title = "Neutrophil Subclusters (K=2)")
-
+    labs(title = "D") +
+    theme_custom() +
+    theme(plot.title = element_text(size = 20, face = "bold", hjust = 0)) # 左对齐大标题
 
 # ==============================================================================
-# 3. 绘制 Figure 1E: Cd177 表达量 FeaturePlot (未更改)
+# 3. 绘制 Figure 1E: Cd177 表达量 FeaturePlot
 # ==============================================================================
 
 message("--- 正在绘制 Figure 1E: Cd177 表达量 ---")
 
-max_exp <- max(umap_data$CD177_expression)
-min_exp <- min(umap_data$CD177_expression)
-
-umap_data_sorted_exp <- umap_data %>% 
-  arrange(CD177_expression)
+# 排序以防遮挡
+umap_data_sorted_exp <- umap_data %>% arrange(CD177_expression)
 
 p_umap_cd177 <- ggplot(umap_data_sorted_exp, aes(x = UMAP_1, y = UMAP_2, color = CD177_expression)) +
     geom_point(size = 0.5, alpha = 0.8) +
     scale_color_gradientn(
-        colors = c("lightgrey", "yellow", "red"), # 灰-黄-红 梯度
-        limits = c(min_exp, max_exp),
-        name = "Cd177\nExpr."
+        colors = c("lightgrey", "magenta"), # 仿照论文图E的紫色
+        name = "CD177"
     ) +
-    theme_minimal() +
-    theme(
-        panel.grid = element_blank(),
-        axis.title = element_blank(),
-        axis.text = element_blank(),
-        axis.ticks = element_blank(),
-        legend.position = "right",
-        plot.title = element_text(hjust = 0.5)
-    ) +
-    labs(title = "Cd177 Expression")
-
+    labs(title = "E") +
+    theme_custom() +
+    theme(plot.title = element_text(size = 20, face = "bold", hjust = 0))
 
 # ==============================================================================
-# 4. 绘制 Figure 1F (修正): UMAP 样本来源叠加图 (类似论文中的图)
+# 4. 绘制 Figure 1F (修正): UMAP 样本来源叠加图
 # ==============================================================================
 
 message("--- 正在绘制 Figure 1F (修正): UMAP 样本来源叠加图 ---")
 
-# 按照 sample_group 排序，将其中一组（比如 RRV_5d/蓝色）放在上层，以更好地进行可视化。
-umap_data_sorted_sample <- umap_data %>% 
-  arrange(sample_group)
+# 随机打乱顺序，避免一种颜色完全覆盖另一种
+set.seed(123)
+umap_data_shuffled <- umap_data[sample(nrow(umap_data)), ]
 
-p_umap_sample_overlay <- ggplot(umap_data_sorted_sample, aes(x = UMAP_1, y = UMAP_2, color = sample_group)) +
+# 检查样本名是否匹配颜色定义的 Key
+print("样本组名称:")
+print(unique(umap_data_shuffled$sample_group))
+# 如果您的样本名不是 NC_5d/RRV_5d，请在这里动态调整 sample_colors 的 names
+
+p_umap_sample <- ggplot(umap_data_shuffled, aes(x = UMAP_1, y = UMAP_2, color = sample_group)) +
     geom_point(size = 0.5, alpha = 0.8) +
-    scale_color_manual(values = sample_colors, name = "Sample Group") +
-    theme_minimal() +
-    theme(
-        panel.grid = element_blank(),
-        axis.title = element_blank(),
-        axis.text = element_blank(),
-        axis.ticks = element_blank(),
-        legend.position = "right",
-        plot.title = element_text(hjust = 0.5)
-    ) +
-    labs(title = "Sample Origin Overlay")
+    scale_color_manual(values = sample_colors, name = "Group") +
+    labs(title = "F") +
+    theme_custom() +
+    theme(plot.title = element_text(size = 20, face = "bold", hjust = 0))
 
 # ==============================================================================
 # 5. 组合图形
@@ -112,19 +109,12 @@ p_umap_sample_overlay <- ggplot(umap_data_sorted_sample, aes(x = UMAP_1, y = UMA
 
 message("--- 正在组合 Figure 1 D, E, F ---")
 
-# D (亚群) 和 E (表达量)
-p_combined_de <- ggarrange(p_umap_cluster, p_umap_cd177, 
-                           ncol = 2, 
-                           labels = c("D", "E"),
-                           common.legend = FALSE)
-
-# 将组合图 (D+E) 和 F (样本来源) 垂直组合
-p_final <- ggarrange(p_combined_de, p_umap_sample_overlay, 
+# 垂直排列 D, E, F
+p_final <- ggarrange(p_umap_cluster, p_umap_cd177, p_umap_sample,
                      ncol = 1, 
-                     heights = c(1, 1), 
-                     labels = c("", "F")) 
+                     nrow = 3,
+                     align = "v")
 
 # 保存最终组合图
-ggsave("Figure_1DEF_Combined_Replication_RevisedF.png", p_final, width = 10, height = 10)
-message("🎉 最终组合图已保存为 Figure_1DEF_Combined_Replication_RevisedF.png (F图已修正为 UMAP 叠加图)")
-message("现在 Figure 1F 应该与论文图相似，展示了亚群中不同样本的分布。")
+ggsave("Figure_1DEF_Combined_Replication_RevisedF.png", p_final, width = 6, height = 15, dpi = 300)
+message("🎉 最终组合图已保存为 Figure_1DEF_Combined_Replication_RevisedF.png")
